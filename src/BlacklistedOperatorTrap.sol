@@ -3,57 +3,58 @@ pragma solidity ^0.8.20;
 
 import {ITrap} from "drosera-contracts/interfaces/ITrap.sol";
 
-/// @title BlacklistedOperatorTrap
-/// @notice Simple Drosera trap that flags calls from blacklisted operators
-/// @dev Follows the common ITrap pattern used in Drosera tutorials:
-///      - collect() -> returns bytes
-///      - shouldRespond(bytes[] calldata) -> returns (bool, bytes)
+interface IOperatorRegistry {
+    function isBlacklisted(address operator) external view returns (bool);
+}
+
+interface IBlacklistedResponder {
+    function respondToBlacklist(address operator, bool listed) external;
+}
+
 contract BlacklistedOperatorTrap is ITrap {
-    // Anyone can add/remove in this PoC (no constructor, no access control to keep it simple)
-    mapping(address => bool) public isBlacklisted;
+    IOperatorRegistry public immutable REGISTRY;
+    address public immutable TARGET_OPERATOR;
+    address public immutable RESPONDER;
 
-    /// @notice Add an operator to the blacklist
-    function addToBlacklist(address operator) external {
-        isBlacklisted[operator] = true;
+    constructor(
+        address _registry,
+        address _targetOperator,
+        address _responder
+    ) {
+        require(_registry != address(0), "zero registry");
+        require(_targetOperator != address(0), "zero target");
+        require(_responder != address(0), "zero responder");
+
+        REGISTRY = IOperatorRegistry(_registry);
+        TARGET_OPERATOR = _targetOperator;
+        RESPONDER = _responder;
     }
 
-    /// @notice Remove an operator from the blacklist
-    function removeFromBlacklist(address operator) external {
-        isBlacklisted[operator] = false;
-    }
-
-    /// @notice Collect data for the current caller
-    /// @dev Encodes (operator, isBlacklisted) into bytes
-    ///      This is cheap and only reads storage once.
     function collect() external view override returns (bytes memory) {
-        bool flagged = isBlacklisted[msg.sender];
-        // Payload: (operator, flagged)
-        return abi.encode(msg.sender, flagged);
+        bool flagged = REGISTRY.isBlacklisted(TARGET_OPERATOR);
+        uint256 blockNumber = block.number;
+        return abi.encode(TARGET_OPERATOR, flagged, blockNumber);
     }
 
-    /// @notice Decide if Drosera should respond based on collected data
-    /// @param data Array of bytes payloads; we use data[0] from collect()
-    /// @return shouldRespond_ True if response should trigger
-    /// @return responsePayload Bytes that will be forwarded to the response contract
     function shouldRespond(
         bytes[] calldata data
-    )
-        external
-        pure
-        override
-        returns (bool shouldRespond_, bytes memory responsePayload)
-    {
-        if (data.length == 0) {
+    ) external pure override returns (bool, bytes memory) {
+        if (data.length == 0 || data[0].length == 0) {
             return (false, bytes(""));
         }
 
-        (address operator, bool flagged) = abi.decode(data[0], (address, bool));
+        (address operator, bool flagged, ) = abi.decode(
+            data[0],
+            (address, bool, uint256)
+        );
 
-        if (!flagged) {
-            return (false, bytes(""));
-        }
+        if (!flagged) return (false, bytes(""));
 
-        // If blacklisted, respond and forward (operator, flagged) as payload
         return (true, abi.encode(operator, flagged));
+    }
+
+    function respond(bytes calldata payload) external {
+        (address operator, bool flagged) = abi.decode(payload, (address, bool));
+        IBlacklistedResponder(RESPONDER).respondToBlacklist(operator, flagged);
     }
 }
